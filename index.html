@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Safari Duck Hunt</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html, body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            font-family: Arial, sans-serif;
+            background: #87CEEB;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            /* iOS safe area support */
+            padding-top: constant(safe-area-inset-top);
+            padding-bottom: constant(safe-area-inset-bottom);
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        
+        #startScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        #startScreen h1 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+        }
+        
+        #controllerStatus {
+            font-size: 1.1em;
+            margin-bottom: 30px;
+            line-height: 1.4;
+            max-width: 400px;
+        }
+        
+        button {
+            font-size: 1.2em;
+            padding: 15px 30px;
+            margin: 10px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            min-width: 200px;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        button:active {
+            transform: scale(0.98);
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        #enableMotionBtn {
+            background: #2196F3;
+        }
+        
+        #enableMotionBtn:hover {
+            background: #1976D2;
+        }
+        
+        #startGameBtn {
+            background: #FF9800;
+            display: none;
+        }
+        
+        #startGameBtn:hover {
+            background: #F57C00;
+        }
+        
+        #ui {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            color: white;
+            font-size: 18px;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
+        }
+        
+        #scoreDisplay {
+            font-weight: bold;
+            font-size: 24px;
+        }
+        
+        #tiltInfo {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="startScreen">
+        <h1>🦆 Duck Hunt Safari</h1>
+        <div id="controllerStatus">
+            <strong>🎮 Loading...</strong><br>
+            Checking device capabilities...<br>
+            <small>Please wait...</small>
+        </div>
+        <button id="enableMotionBtn" style="display: none;">🎮 Enable Motion Controls</button>
+        <button id="startGameBtn" style="display: none;">🎯 Start Game</button>
+    </div>
+    
+    <div id="ui">
+        <div>Score: <span id="scoreDisplay">0</span></div>
+        <div id="tiltInfo"></div>
+    </div>
+
+    <script>
+const DUCK_SPAWN_RATE = 2000;
+const GAME_DURATION = 60000;
+const HIGH_SENSITIVITY_MULTIPLIER = 1.5;
+
+let canvas, ctx;
+let ducks = [];
+let score = 0;
+let gunPosition = { x: 0, y: 0 };
+let beta = 0, gamma = 0, alpha = 0;
+let gameStartTime = 0;
+let gameActive = false;
+let highSensitivity = true;
+let duckImage, explosionImage;
+let orientationPermissionGranted = false;
+let isIOS = false;
+
+let scoreDisplay, tiltInfo, startScreen;
+
+function detectIOSSafari() {
+    const userAgent = navigator.userAgent;
+    isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
+    if (!isIOS) {
+        isIOS = /iPad|iPhone|iPod/.test(navigator.platform) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+    console.log('Device detected - iOS:', isIOS);
+}
+
+window.addEventListener("deviceorientation", function(e) {
+    let requestBtn = document.querySelector("#enableMotionBtn");
+    if (requestBtn) {
+        requestBtn.style.display = 'none';
+        document.getElementById('controllerStatus').innerHTML = `
+            <strong>🎯 Motion Controls Active!</strong><br>
+            Tilt detected! Ready to play.<br>
+            <small>Tap "Start Game" to begin!</small>
+        `;
+        document.getElementById('startGameBtn').style.display = 'inline-block';
+    }
+    if (!gameActive) return;
+    alpha = e.alpha || 0;
+    beta = e.beta || 0;
+    gamma = e.gamma || 0;
+    
+    // orientation angle handling
+    let deviceOrientation = 0;
+    if (screen.orientation && typeof screen.orientation.angle === "number") {
+        deviceOrientation = screen.orientation.angle;
+    } else if (typeof window.orientation === "number") {
+        deviceOrientation = window.orientation;
+    }
+    
+    let adjustedBeta = beta;
+    let adjustedGamma = gamma;
+    
+    switch (deviceOrientation) {
+        case 0:
+            adjustedBeta = beta; adjustedGamma = gamma; break;
+        case 90:
+            adjustedBeta = gamma; adjustedGamma = -beta; break;
+        case -90:
+            adjustedBeta = -gamma; adjustedGamma = beta; break;
+        case 180:
+            adjustedBeta = -beta; adjustedGamma = -gamma; break;
+    }
+    
+    adjustedBeta = Math.max(-75, Math.min(75, adjustedBeta));
+    adjustedGamma = Math.max(-90, Math.min(90, adjustedGamma));
+    
+    const sensitivity = highSensitivity ? HIGH_SENSITIVITY_MULTIPLIER : 1;
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
+    
+    gunPosition.x = screenWidth/2 + (adjustedGamma * sensitivity * (screenWidth/180));
+    gunPosition.y = screenHeight * 0.7 - (adjustedBeta * sensitivity * (screenHeight * 0.7/150));
+    
+    const padding = 30;
+    gunPosition.x = Math.max(padding, Math.min(screenWidth - padding, gunPosition.x));
+    gunPosition.y = Math.max(padding, Math.min(screenHeight - padding, gunPosition.y));
+    
+    if (Math.abs(adjustedBeta) < 3 && Math.abs(adjustedGamma) < 3) {
+        gunPosition.x = screenWidth/2;
+        gunPosition.y = screenHeight * 0.7;
+    }
+});
+
+async function enableMotionControls() {
+    try {
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+            const permission = await DeviceOrientationEvent.requestPermission();
+            if (permission !== "granted") {
+                showFallbackMode();
+                return;
+            }
+        }
+        orientationPermissionGranted = true;
+        document.getElementById('controllerStatus').innerHTML = `
+            <strong>✅ Motion Permission Granted!</strong><br>
+            Tilt your device to test motion controls.<br>
+            <small>Waiting for orientation data...</small>
+        `;
+    } catch (err) {
+        console.error("Motion permission error:", err);
+        showFallbackMode();
+    }
+}
+
+function showFallbackMode() {
+    document.getElementById('enableMotionBtn').style.display = 'none';
+    document.getElementById('controllerStatus').innerHTML = `
+        <strong>📱 Tap Mode Active</strong><br>
+        Motion controls not available.<br>
+        <small>Tap anywhere to aim and shoot!</small>
+    `;
+    document.getElementById('startGameBtn').style.display = 'inline-block';
+}
+
+function init() {
+    detectIOSSafari();
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    resizeCanvas();
+    scoreDisplay = document.getElementById('scoreDisplay');
+    tiltInfo = document.getElementById('tiltInfo');
+    startScreen = document.getElementById('startScreen');
+    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('orientationchange', () => setTimeout(resizeCanvas, 100));
+    document.getElementById('enableMotionBtn').onclick = enableMotionControls;
+    document.getElementById('startGameBtn').onclick = startGame;
+    if (isIOS) {
+        canvas.addEventListener('touchstart', handleShoot, { passive: false });
+        document.addEventListener('touchstart', preventIOSBounce, { passive: false });
+        document.addEventListener('touchmove', preventIOSBounce, { passive: false });
+    } else {
+        window.addEventListener('touchstart', handleShoot);
+        window.addEventListener('click', handleShoot);
+    }
+    loadAssets();
+    setupUI();
+}
+
+function setupUI() {
+    if (window.DeviceOrientationEvent && typeof DeviceOrientationEvent.requestPermission === "function") {
+        document.getElementById('enableMotionBtn').style.display = 'inline-block';
+        document.getElementById('startGameBtn').style.display = 'none';
+        document.getElementById('controllerStatus').innerHTML = `
+            <strong>🎮 Motion Controls Available!</strong><br>
+            Enable device orientation for tilt controls.<br>
+            <small>You'll be asked for sensor permission.</small>
+        `;
+    } else {
+        showFallbackMode();
+    }
+}
+
+function preventIOSBounce(e) {
+    if (e.target === canvas || e.target.closest('#gameCanvas')) {
+        e.preventDefault();
+    }
+}
+
+function loadAssets() {
+    duckImage = new Image();
+    duckImage.crossOrigin = 'anonymous';
+    const duckSVG = `<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <ellipse cx="50" cy="60" rx="30" ry="20" fill="#FFD700"/>
+        <circle cx="70" cy="40" r="15" fill="#FFD700"/>
+        <path d="M75 40 L85 37 L85 43 Z" fill="#FFA500"/>
+        <circle cx="72" cy="37" r="2" fill="#000000"/>
+        <ellipse cx="45" cy="60" rx="15" ry="10" fill="#FFC107" transform="rotate(-15 45 60)"/>
+    </svg>`;
+    duckImage.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(duckSVG);
+    explosionImage = new Image();
+    explosionImage.crossOrigin = 'anonymous';
+    const explosionSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="30" fill="#FF6B6B" opacity="0.8"/>
+        <circle cx="50" cy="50" r="20" fill="#FFE66D" opacity="0.9"/>
+        <circle cx="50" cy="50" r="10" fill="#FFFFFF"/>
+        <path d="M25 25 L75 75M25 75 L75 25M50 10 L50 90M10 50 L90 50" stroke="#FF4757" stroke-width="3" opacity="0.7"/>
+    </svg>`;
+    explosionImage.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(explosionSVG);
+}
+
+function resizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = window.innerWidth * dpr;
+    canvas.height = window.innerHeight * dpr;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(1,0,0,1,0,0); // reset before scaling
+    ctx.scale(dpr, dpr);
+    gunPosition = { x: window.innerWidth/2, y: window.innerHeight * 0.8 };
+}
+
+function handleShoot(e) {
+    if (!gameActive) return;
+    if (e) {
+        e.preventDefault();
+        if (!orientationPermissionGranted && e.touches && e.touches.length > 0) {
+            const touch = e.touches[0];
+            gunPosition.x = touch.clientX;
+            gunPosition.y = touch.clientY;
+        }
+    }
+    let hitAny = false;
+    ducks.forEach(duck => {
+        if (!duck.hit && isHit(duck, gunPosition)) {
+            duck.hit = true;
+            duck.hitTime = Date.now();
+            score += 100;
+            hitAny = true;
+        }
+    });
+    scoreDisplay.textContent = score;
+    if (hitAny) vibrate();
+}
+
+function vibrate() {
+    if (isIOS) {
+        try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioContext.createOscillator();
+            const gainNode = audioContext.createGain();
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.1);
+            oscillator.start(audioContext.currentTime);
+            oscillator.stop(audioContext.currentTime + 0.1);
+        } catch (e) { console.log('Audio feedback not available'); }
+    } else if (navigator.vibrate) {
+        navigator.vibrate(50);
+    }
+}
+
+function isHit(duck, gunPos) {
+    const distance = Math.sqrt(Math.pow(duck.x - gunPos.x, 2) + Math.pow(duck.y - gunPos.y, 2));
+    return distance < 40;
+}
+
+function startGame() {
+    score = 0;
+    ducks = [];
+    gameStartTime = Date.now();
+    gameActive = true;
+    scoreDisplay.textContent = "0";
+    startScreen.style.display = 'none';
+    spawnDuck();
+    gameLoop();
+    setTimeout(endGame, GAME_DURATION);
+}
+
+function spawnDuck() {
+    if (!gameActive) return;
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
+    const facingLeft = Math.random() > 0.5;
+    ducks.push({
+        x: Math.random() * screenWidth,
+        y: screenHeight + 50,
+        speedX: facingLeft ? -Math.abs((Math.random() - 0.5) * 2) : Math.abs((Math.random() - 0.5) * 2),
+        speedY: -(2 + Math.random() * 3),
+        hit: false,
+        hitTime: 0,
+        facingLeft: facingLeft
+    });
+    if (gameActive) setTimeout(spawnDuck, DUCK_SPAWN_RATE);
+}
+
+function updateDucks() {
+    const now = Date.now();
+    const screenWidth = window.innerWidth;
+    for (let i = ducks.length - 1; i >= 0; i--) {
+        const duck = ducks[i];
+        if (duck.hit) {
+            if (now - duck.hitTime > 300) ducks.splice(i, 1);
+        } else {
+            duck.x += duck.speedX;
+            duck.y += duck.speedY;
+            if (duck.y < -100 || duck.x < -100 || duck.x > screenWidth + 100) ducks.splice(i, 1);
+        }
+    }
+}
+
+function draw() {
+    const screenWidth = window.innerWidth;
+    const screenHeight = window.innerHeight;
+    ctx.fillStyle = '#87CEEB';
+    ctx.fillRect(0, 0, screenWidth, screenHeight);
+    ctx.fillStyle = '#8BC34A';
+    ctx.fillRect(0, screenHeight * 0.9, screenWidth, screenHeight * 0.1);
+    ducks.forEach(duck => {
+        ctx.save();
+        if (duck.hit) {
+            if (explosionImage.complete) ctx.drawImage(explosionImage, duck.x - 40, duck.y - 40, 80, 80);
+        } else {
+            if (duckImage.complete) {
+                ctx.translate(duck.x, duck.y);
+                if (duck.facingLeft) ctx.scale(-1, 1);
+                ctx.drawImage(duckImage, -25, -25, 50, 50);
+            }
+        }
+        ctx.restore();
+    });
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(gunPosition.x, gunPosition.y, 20, 0, Math.PI * 2);
+    ctx.moveTo(gunPosition.x - 30, gunPosition.y);
+    ctx.lineTo(gunPosition.x + 30, gunPosition.y);
+    ctx.moveTo(gunPosition.x, gunPosition.y - 30);
+    ctx.lineTo(gunPosition.x, gunPosition.y + 30);
+    ctx.stroke();
+    if (gameActive) {
+        const timeLeft = Math.max(0, GAME_DURATION - (Date.now() - gameStartTime));
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(screenWidth - 120, 10, 110, 40);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 18px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${(timeLeft/1000).toFixed(1)}s`, screenWidth - 20, 35);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(10, 10, 100, 40);
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${score}`, 20, 35);
+    }
+    if (orientationPermissionGranted) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(10, screenHeight - 110, 280, 90);
+        ctx.fillStyle = 'white';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText('🎯 Motion Controls Active', 20, screenHeight - 90);
+        ctx.fillText(`Alpha (Z): ${alpha.toFixed(1)}°`, 20, screenHeight - 75);
+        ctx.fillText(`Beta (X): ${beta.toFixed(1)}°`, 20, screenHeight - 60);
+        ctx.fillText(`Gamma (Y): ${gamma.toFixed(1)}°`, 20, screenHeight - 45);
+        const orientation = Math.abs(beta) > Math.abs(gamma) ? "portrait" : "landscape";
+        ctx.fillText(`Orientation: ${orientation}`, 20, screenHeight - 30);
+    }
+}
+
+function endGame() {
+    gameActive = false;
+    startScreen.style.display = 'flex';
+    document.querySelector('#startScreen h1').textContent = `Game Over! Score: ${score}`;
+    document.getElementById('enableMotionBtn').style.display = 'none';
+    document.getElementById('startGameBtn').textContent = "Play Again";
+    document.getElementById('startGameBtn').style.display = 'inline-block';
+}
+
+function gameLoop() {
+    if (!gameActive) return;
+    updateDucks();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+} else {
+    init();
+}
+    </script>
+</body>
+</html>
